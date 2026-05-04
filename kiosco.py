@@ -383,6 +383,14 @@ def db_cerrar_caja(obs=""):
     conn.close()
     return {"ok":True,"totales":t}
 
+def db_movimientos(limit=30):
+    conn = get_db()
+    rows = [dict(r) for r in conn.execute("""
+        SELECT * FROM movimientos_stock ORDER BY id DESC LIMIT ?
+    """, (limit,)).fetchall()]
+    conn.close()
+    return rows
+
 def db_export_csv(fd, fh):
     conn = get_db()
     rows = conn.execute("""
@@ -453,6 +461,23 @@ class Handler(BaseHTTPRequestHandler):
         elif p=="/api/reportes": self.send_json(db_reportes(g("periodo","mes")))
         elif p=="/api/config": self.send_json(db_config())
         elif p=="/api/caja": self.send_json(db_caja())
+        elif p=="/api/movimientos":
+            self.send_json(db_movimientos(int(g("limit","50"))))
+        elif p=="/api/backup":
+            import shutil, tempfile
+            tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".db")
+            tmp.close()
+            shutil.copy2(DB_PATH, tmp.name)
+            with open(tmp.name, "rb") as f:
+                body = f.read()
+            os.unlink(tmp.name)
+            fn = f"kiosco_backup_{date.today().isoformat()}.db"
+            self.send_response(200)
+            self.send_header("Content-Type","application/octet-stream")
+            self.send_header("Content-Disposition",f"attachment;filename={fn}")
+            self.send_header("Content-Length",len(body))
+            self.end_headers()
+            self.wfile.write(body)
         elif p=="/api/export/csv":
             fd=g("desde",date.today().replace(day=1).isoformat()); fh=g("hasta",date.today().isoformat())
             self.send_csv(db_export_csv(fd,fh),f"ventas_{fd}_{fh}.csv")
@@ -871,7 +896,10 @@ input::-webkit-outer-spin-button,input::-webkit-inner-spin-button{-webkit-appear
     <div style="font-size:2rem;margin-bottom:8px">&#10003;</div>
     <div class="venta-total" id="vok-total">$0</div>
     <div style="font-family:'Archivo Narrow',sans-serif;font-size:.8rem;color:var(--muted);margin-top:4px" id="vok-detalle">-</div>
-    <button class="btn btn-ghost" style="margin-top:16px" onclick="nuevaVenta()">&#43; Nueva Venta</button>
+    <div style="display:flex;gap:10px;justify-content:center;margin-top:16px;flex-wrap:wrap">
+      <button class="btn btn-ghost" onclick="nuevaVenta()">&#43; Nueva Venta</button>
+      <button class="btn btn-primary" onclick="imprimirTicket()">&#128438; Imprimir Ticket</button>
+    </div>
   </div>
 </div>
 
@@ -1072,7 +1100,22 @@ input::-webkit-outer-spin-button,input::-webkit-inner-spin-button{-webkit-appear
       <div><label>Telefono</label><input type="text" id="cfg-tel" placeholder="+54 9 11 ..."></div>
       <div class="form-full"><label>Direccion</label><input type="text" id="cfg-dir" placeholder="Calle, numero, ciudad..."></div>
     </div>
-    <button class="btn btn-primary" style="margin-top:16px" onclick="guardarConfig()">&#10003; Guardar Cambios</button>
+    <div style="display:flex;gap:10px;margin-top:16px;flex-wrap:wrap">
+      <button class="btn btn-primary" onclick="guardarConfig()">&#10003; Guardar Cambios</button>
+      <button class="btn btn-ghost" onclick="descargarBackup()">&#128190; Descargar Backup (.db)</button>
+    </div>
+  </div>
+  <div class="card" style="margin-top:14px">
+    <div class="card-title">&#128274; Informacion del sistema</div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;font-size:.8rem">
+      <div><span style="color:var(--muted)">Version:</span> <strong>Kiosco Digital v2.0</strong></div>
+      <div><span style="color:var(--muted)">Motor:</span> <strong>Python + SQLite</strong></div>
+      <div><span style="color:var(--muted)">Base de datos:</span> <strong>kiosco.db (local)</strong></div>
+      <div><span style="color:var(--muted)">Requiere internet:</span> <strong>No (solo para fuentes/graficos)</strong></div>
+    </div>
+    <div class="alert alert-info" style="margin-top:12px;font-size:.72rem">
+      &#128161; El backup descarga una copia exacta de tu base de datos. Guardala en un pendrive o Google Drive como respaldo.
+    </div>
   </div>
 </div>
 
@@ -1331,6 +1374,16 @@ function quitarItem(id) {
   renderCart();
 }
 
+function cambiarCantCart(id, val) {
+  const n = parseInt(val);
+  if(!n || n < 1) return;
+  const item = cart.find(i=>i.id===id);
+  if(!item) return;
+  item.cant = n;
+  item.sub = n * item.precio;
+  recalcTotal();
+}
+
 function renderCart() {
   const el = $('cart-items');
   $('cart-count').textContent = `${cart.length} item${cart.length!==1?'s':''}`;
@@ -1343,10 +1396,13 @@ function renderCart() {
     <div class="cart-item">
       <div style="flex:1">
         <div class="cart-item-name">${i.nombre}</div>
-        <div class="cart-item-qty">${i.cant} x ${pesos(i.precio)}</div>
+        <div class="cart-item-qty">${pesos(i.precio)} c/u</div>
       </div>
-      <div class="cart-item-price">${pesos(i.sub)}</div>
-      <button class="btn btn-icon btn-ghost" style="font-size:.75rem;margin-left:6px" onclick="quitarItem(${i.id})">✕</button>
+      <input type="number" min="1" value="${i.cant}"
+        style="width:52px;text-align:center;padding:4px 6px;font-size:.8rem;font-weight:700;border:1.5px solid var(--border);border-radius:7px;margin:0 6px"
+        onchange="cambiarCantCart(${i.id},this.value)" onclick="this.select()">
+      <div class="cart-item-price" style="min-width:64px;text-align:right">${pesos(i.sub)}</div>
+      <button class="btn btn-icon btn-ghost" style="font-size:.75rem;margin-left:6px;flex-shrink:0" onclick="quitarItem(${i.id})">✕</button>
     </div>`).join('');
   recalcTotal();
 }
@@ -1370,7 +1426,7 @@ async function confirmarVenta() {
   const r = await fetch('/api/venta',{method:'POST',headers:{'Content-Type':'application/json'},
     body:JSON.stringify({items:cart.map(i=>({producto_id:i.id,cantidad:i.cant})),metodo_pago:metodoActual,descuento:desc})}).then(r=>r.json());
   if(r.ok) {
-    const total = cart.reduce((a,i)=>a+i.sub,0)-desc;
+    lastTicketData = {items:[...cart], total:r.total, desc, metodo:metodoActual, vid:r.venta_id, negocio:$('sb-negocio').textContent};
     $('vok-total').textContent = pesos(r.total);
     $('vok-detalle').textContent = `${cart.length} producto${cart.length!==1?'s':''} · ${metodoActual==='mp'?'Mercado Pago':'Efectivo'} · Venta #${r.venta_id}`;
     $('venta-ok').classList.add('show');
@@ -1385,6 +1441,50 @@ async function confirmarVenta() {
 function nuevaVenta() {
   $('venta-ok').classList.remove('show');
   resetPOS();
+}
+
+let lastTicketData = null;
+
+function imprimirTicket() {
+  if(!lastTicketData) return;
+  const {items, total, desc, metodo, vid, negocio} = lastTicketData;
+  const ahora = new Date();
+  const fecha = ahora.toLocaleDateString('es-AR');
+  const hora = ahora.toLocaleTimeString('es-AR', {hour:'2-digit',minute:'2-digit'});
+  const sep = '─'.repeat(32);
+  const lineas = items.map(i=>{
+    const nom = i.nombre.length>20 ? i.nombre.slice(0,19)+'.' : i.nombre.padEnd(20);
+    const pr = pesos(i.sub).padStart(10);
+    return `${nom}${pr}\n  ${i.cant} x ${pesos(i.precio)}`;
+  }).join('\n');
+  const win = window.open('','_blank','width=400,height=600');
+  win.document.write(`<!DOCTYPE html><html><head><meta charset="UTF-8">
+  <title>Ticket #${vid}</title>
+  <style>
+    *{margin:0;padding:0;box-sizing:border-box}
+    body{font-family:'Courier New',monospace;font-size:12px;width:72mm;padding:4mm;color:#000}
+    .center{text-align:center} .bold{font-weight:700} .line{border-top:1px dashed #000;margin:6px 0}
+    .row{display:flex;justify-content:space-between;margin:2px 0}
+    .total-row{display:flex;justify-content:space-between;font-size:15px;font-weight:700;margin:4px 0}
+    @media print{@page{margin:0;size:72mm auto}body{padding:2mm}}
+  </style></head><body>
+  <div class="center bold" style="font-size:15px;margin-bottom:2px">${negocio}</div>
+  <div class="center" style="font-size:10px">Ticket de venta</div>
+  <div class="line"></div>
+  <div class="row"><span>Fecha: ${fecha}</span><span>Hora: ${hora}</span></div>
+  <div class="row"><span>Venta #${vid}</span><span>${metodo==='mp'?'Mercado Pago':'Efectivo'}</span></div>
+  <div class="line"></div>
+  ${items.map(i=>`<div class="row"><span>${i.nombre.slice(0,22)}</span><span>${pesos(i.sub)}</span></div>
+  <div style="font-size:10px;color:#555;margin-bottom:3px;padding-left:4px">${i.cant} x ${pesos(i.precio)}</div>`).join('')}
+  <div class="line"></div>
+  ${desc>0?`<div class="row"><span>Subtotal</span><span>${pesos(total+desc)}</span></div>
+  <div class="row"><span>Descuento</span><span>-${pesos(desc)}</span></div>`:''}
+  <div class="total-row"><span>TOTAL</span><span>${pesos(total)}</span></div>
+  <div class="line"></div>
+  <div class="center" style="font-size:10px;margin-top:6px">¡Gracias por su compra!</div>
+  <script>window.onload=()=>{window.print();}<\/script>
+  </body></html>`);
+  win.document.close();
 }
 
 function resetPOS() {
@@ -1456,11 +1556,19 @@ async function ingrConfirmar() {
 }
 
 async function cargarMovimientos() {
-  const r=await fetch('/api/ventas?limit=1').then(r=>r.json()); // Just ping
-  // Load last movements via a simple fetch of all products as workaround (no specific endpoint)
-  // Show placeholder
+  const movs = await fetch('/api/movimientos?limit=50').then(r=>r.json());
   const tbody=$('mov-tbody');
-  if(tbody) tbody.innerHTML='<tr><td colspan="7" style="text-align:center;color:var(--muted);padding:16px">Registros recientes se muestran aqui</td></tr>';
+  if(!tbody) return;
+  if(!movs.length){tbody.innerHTML='<tr><td colspan="7" style="text-align:center;color:var(--muted);padding:16px">Sin movimientos registrados</td></tr>';return;}
+  tbody.innerHTML = movs.map(m=>`<tr>
+    <td class="td-muted">${m.fecha?.slice(0,16)||'-'}</td>
+    <td><strong>${m.producto_nombre}</strong></td>
+    <td><span class="badge ${m.tipo==='entrada'?'badge-ok':'badge-danger'}">${m.tipo==='entrada'?'▲ Entrada':'▼ Salida'}</span></td>
+    <td style="text-align:center;font-weight:700">${m.tipo==='entrada'?'+':'−'}${m.cantidad}</td>
+    <td class="td-muted">${m.stock_anterior??'-'}</td>
+    <td style="font-weight:700">${m.stock_nuevo??'-'}</td>
+    <td class="td-muted">${m.motivo||'-'}</td>
+  </tr>`).join('');
 }
 
 // ── PRODUCTOS ─────────────────────────────────────────────
@@ -1712,8 +1820,36 @@ async function guardarConfig() {
   else toast('Error al guardar','err');
 }
 
+// ── BACKUP ───────────────────────────────────────────────
+function descargarBackup() {
+  window.location.href='/api/backup';
+  toast('Descargando backup...','ok');
+}
+
+// ── NOTIFICACIÓN STOCK BAJO AL INICIO ────────────────────
+async function checkStockAlInicio() {
+  const d = await fetch('/api/dashboard').then(r=>r.json());
+  if(d.bajo_stock && d.bajo_stock.length > 0) {
+    const lista = d.bajo_stock.map(p=>`• ${p.nombre} — ${p.stock} unidad${p.stock!==1?'es':''}${p.stock===0?' (SIN STOCK)':''}`).join('\n');
+    const modal = document.createElement('div');
+    modal.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:9999;display:flex;align-items:center;justify-content:center';
+    modal.innerHTML=`<div style="background:#fff;border-radius:16px;padding:28px;max-width:420px;width:90%;box-shadow:0 20px 60px rgba(0,0,0,.2)">
+      <div style="font-size:1.5rem;margin-bottom:6px">⚠️</div>
+      <div style="font-size:1rem;font-weight:900;margin-bottom:4px;color:#1a1200">Stock bajo al iniciar</div>
+      <div style="font-size:.75rem;color:#8a7d60;margin-bottom:14px">${d.bajo_stock.length} producto${d.bajo_stock.length!==1?'s':''} necesitan reposición</div>
+      <div style="background:#fff8e6;border:1px solid #f5c800;border-radius:9px;padding:12px;font-size:.75rem;font-family:'Courier New',monospace;white-space:pre;line-height:1.8">${lista}</div>
+      <div style="display:flex;gap:10px;margin-top:16px">
+        <button onclick="this.closest('[style]').remove();navTo('ingreso')" style="flex:1;padding:10px;background:#1a1200;color:#fff;border:none;border-radius:9px;font-weight:700;cursor:pointer;font-size:.82rem">Ir a Ingreso</button>
+        <button onclick="this.closest('[style]').remove()" style="padding:10px 16px;background:#f5f0e8;border:1.5px solid #e0d8c8;border-radius:9px;font-weight:700;cursor:pointer;font-size:.82rem">Cerrar</button>
+      </div>
+    </div>`;
+    document.body.appendChild(modal);
+  }
+}
+
 // ── INIT ──────────────────────────────────────────────────
 loadDashboard();
+setTimeout(checkStockAlInicio, 1500);
 // Init historial dates
 const hoy=new Date().toISOString().split('T')[0];
 const mesInicio=new Date(); mesInicio.setDate(1);
