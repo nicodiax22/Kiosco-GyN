@@ -77,6 +77,25 @@ def init_db():
             fecha TEXT DEFAULT (datetime('now','localtime'))
         );
 
+        CREATE TABLE IF NOT EXISTS clientes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            nombre TEXT NOT NULL,
+            telefono TEXT,
+            saldo REAL DEFAULT 0,
+            activo INTEGER DEFAULT 1,
+            created_at TEXT DEFAULT (datetime('now','localtime'))
+        );
+
+        CREATE TABLE IF NOT EXISTS cuenta_corriente (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            cliente_id INTEGER NOT NULL,
+            tipo TEXT NOT NULL,
+            monto REAL NOT NULL,
+            descripcion TEXT,
+            fecha TEXT DEFAULT (datetime('now','localtime')),
+            FOREIGN KEY(cliente_id) REFERENCES clientes(id)
+        );
+
         CREATE TABLE IF NOT EXISTS caja (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             fecha TEXT DEFAULT (date('now','localtime')),
@@ -399,6 +418,66 @@ def db_cerrar_caja(obs=""):
     conn.close()
     return {"ok":True,"totales":t}
 
+def db_clientes(q=""):
+    conn = get_db()
+    sql = "SELECT * FROM clientes WHERE activo=1"
+    params = []
+    if q:
+        sql += " AND lower(nombre) LIKE ?"
+        params.append(f"%{q.lower()}%")
+    sql += " ORDER BY nombre"
+    rows = [dict(r) for r in conn.execute(sql, params).fetchall()]
+    conn.close()
+    return rows
+
+def db_crear_cliente(data):
+    conn = get_db()
+    conn.execute("INSERT INTO clientes (nombre, telefono) VALUES (:nombre, :telefono)", data)
+    conn.commit()
+    conn.close()
+    return {"ok": True, "msg": "Cliente creado"}
+
+def db_fiado(cliente_id, monto, desc="Fiado"):
+    conn = get_db()
+    cl = conn.execute("SELECT * FROM clientes WHERE id=?", (cliente_id,)).fetchone()
+    if not cl:
+        conn.close()
+        return {"ok": False, "msg": "Cliente no encontrado"}
+    conn.execute("UPDATE clientes SET saldo=saldo+? WHERE id=?", (monto, cliente_id))
+    conn.execute("INSERT INTO cuenta_corriente (cliente_id,tipo,monto,descripcion) VALUES (?,'cargo',?,?)",
+                 (cliente_id, monto, desc))
+    conn.commit()
+    nuevo = conn.execute("SELECT saldo FROM clientes WHERE id=?", (cliente_id,)).fetchone()["saldo"]
+    conn.close()
+    return {"ok": True, "saldo": nuevo, "msg": f"Fiado registrado. Saldo: ${nuevo:,.0f}"}
+
+def db_pago_cliente(cliente_id, monto, desc="Pago"):
+    conn = get_db()
+    cl = conn.execute("SELECT * FROM clientes WHERE id=?", (cliente_id,)).fetchone()
+    if not cl:
+        conn.close()
+        return {"ok": False, "msg": "Cliente no encontrado"}
+    conn.execute("UPDATE clientes SET saldo=saldo-? WHERE id=?", (monto, cliente_id))
+    conn.execute("INSERT INTO cuenta_corriente (cliente_id,tipo,monto,descripcion) VALUES (?,'pago',?,?)",
+                 (cliente_id, monto, desc))
+    conn.commit()
+    nuevo = conn.execute("SELECT saldo FROM clientes WHERE id=?", (cliente_id,)).fetchone()["saldo"]
+    conn.close()
+    return {"ok": True, "saldo": nuevo, "msg": f"Pago registrado. Saldo: ${nuevo:,.0f}"}
+
+def db_cuenta_cliente(cliente_id):
+    conn = get_db()
+    cl = conn.execute("SELECT * FROM clientes WHERE id=?", (cliente_id,)).fetchone()
+    if not cl:
+        conn.close()
+        return None
+    movs = [dict(r) for r in conn.execute(
+        "SELECT * FROM cuenta_corriente WHERE cliente_id=? ORDER BY id DESC LIMIT 30", (cliente_id,)).fetchall()]
+    result = dict(cl)
+    result["movimientos"] = movs
+    conn.close()
+    return result
+
 def db_movimientos(limit=30):
     conn = get_db()
     rows = [dict(r) for r in conn.execute("""
@@ -505,6 +584,10 @@ class Handler(BaseHTTPRequestHandler):
         elif p=="/api/reportes": self.send_json(db_reportes(g("periodo","mes")))
         elif p=="/api/config": self.send_json(db_config())
         elif p=="/api/caja": self.send_json(db_caja())
+        elif p=="/api/clientes":
+            self.send_json(db_clientes(g("q")))
+        elif p.startswith("/api/clientes/") and p.split("/")[-1].isdigit():
+            self.send_json(db_cuenta_cliente(int(p.split("/")[-1])) or {"error":"No encontrado"})
         elif p=="/api/rentabilidad":
             fd=g("desde",date.today().replace(day=1).isoformat()); fh=g("hasta",date.today().isoformat())
             self.send_json(db_rentabilidad_cat(fd,fh))
@@ -532,7 +615,13 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         b=self.body(); p=urlparse(self.path).path
-        if p=="/api/import/precios":
+        if p=="/api/clientes":
+            self.send_json(db_crear_cliente(b))
+        elif p=="/api/clientes/fiado":
+            self.send_json(db_fiado(b["cliente_id"], b["monto"], b.get("desc","Fiado")))
+        elif p=="/api/clientes/pago":
+            self.send_json(db_pago_cliente(b["cliente_id"], b["monto"], b.get("desc","Pago")))
+        elif p=="/api/import/precios":
             csv_text = b.get("csv","")
             self.send_json(db_import_precios_csv(csv_text))
         elif p=="/api/productos": self.send_json(db_crear_producto(b))
@@ -575,6 +664,10 @@ def get_html():
   --green:#00c566;--green-l:#e6fff3;--red:#ff3b30;--red-l:#fff0ef;
   --surface:#fff;--border:#e0d8c8;--muted:#8a7d60;--text:#1a1200;
   --sidebar:250px;--radius:12px;
+}
+[data-theme="dark"]{
+  --bg:#0f0d0a;--surface:#1a1611;--border:#2e2820;--muted:#6b5e48;--text:#f0e8d8;
+  --blue-l:#0a1433;--mp-l:#021520;--green-l:#061a0f;--red-l:#1a0604;
 }
 *{margin:0;padding:0;box-sizing:border-box}
 body{font-family:'Archivo',sans-serif;background:var(--bg);color:var(--text);min-height:100vh;overflow-x:hidden}
@@ -826,6 +919,9 @@ input::-webkit-outer-spin-button,input::-webkit-inner-spin-button{-webkit-appear
     <div class="nav-item" data-page="reportes" onclick="nav(this)">
       <span class="nav-icon">&#128200;</span><span>Reportes</span>
     </div>
+    <div class="nav-item" data-page="fiados" onclick="nav(this)">
+      <span class="nav-icon">&#128101;</span><span>Fiados / Clientes</span>
+    </div>
     <div class="nav-section">Sistema</div>
     <div class="nav-item" data-page="caja" onclick="nav(this)">
       <span class="nav-icon">&#128181;</span><span>Caja</span>
@@ -835,7 +931,8 @@ input::-webkit-outer-spin-button,input::-webkit-inner-spin-button{-webkit-appear
     </div>
   </nav>
   <div class="sidebar-footer">
-    <div class="version">Kiosco Digital v2.0<br>Python + SQLite &mdash; Sin internet requerido</div>
+    <button onclick="toggleDark()" style="width:100%;background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.1);border-radius:8px;color:rgba(255,255,255,.5);padding:7px;font-size:.72rem;cursor:pointer;font-family:'Archivo',sans-serif;margin-bottom:8px" id="dark-btn">&#9790; Modo oscuro</button>
+    <div class="version">Kiosco Digital v2.0<br>Python + SQLite</div>
   </div>
 </aside>
 
@@ -1139,6 +1236,57 @@ input::-webkit-outer-spin-button,input::-webkit-inner-spin-button{-webkit-appear
   </div>
 </div>
 
+<!-- FIADOS / CUENTA CORRIENTE -->
+<div id="page-fiados" class="page">
+  <div class="page-header">
+    <div><div class="page-title">Fiados y Clientes</div><div class="page-sub">Cuenta corriente por cliente</div></div>
+    <button class="btn btn-yellow" onclick="toggleNuevoCliente()">&#43; Nuevo Cliente</button>
+  </div>
+  <div id="nuevo-cliente-form" style="display:none" class="card" style="margin-bottom:14px">
+    <div class="card-title">Nuevo cliente</div>
+    <div class="form-grid">
+      <div><label>Nombre *</label><input type="text" id="nc-nombre" placeholder="Juan Garcia"></div>
+      <div><label>Telefono</label><input type="text" id="nc-tel" placeholder="+54 9 11..."></div>
+    </div>
+    <div style="display:flex;gap:10px;margin-top:12px">
+      <button class="btn btn-primary" onclick="crearCliente()">&#10003; Guardar</button>
+      <button class="btn btn-ghost" onclick="toggleNuevoCliente()">Cancelar</button>
+    </div>
+  </div>
+  <div class="searchbar"><input type="text" id="cl-q" placeholder="&#128269; Buscar cliente..." oninput="cargarClientes()"></div>
+  <div class="g2">
+    <div class="card">
+      <div class="card-title">&#128101; Clientes</div>
+      <div id="clientes-list"></div>
+    </div>
+    <div class="card" id="cuenta-detalle" style="display:none">
+      <div class="card-title" id="cuenta-titulo">Cuenta</div>
+      <div id="cuenta-saldo-box" style="text-align:center;padding:16px 0;border-bottom:1px solid var(--border);margin-bottom:14px">
+        <div style="font-size:.7rem;color:var(--muted);margin-bottom:4px">SALDO DEUDOR</div>
+        <div id="cuenta-saldo" style="font-size:2rem;font-weight:900;color:var(--red)">$0</div>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:14px">
+        <div>
+          <label>Cargar fiado ($)</label>
+          <input type="number" id="fiado-monto" placeholder="0" min="0">
+          <input type="text" id="fiado-desc" placeholder="Descripcion (opcional)" style="margin-top:6px;font-size:.78rem">
+        </div>
+        <div>
+          <label>Registrar pago ($)</label>
+          <input type="number" id="pago-monto" placeholder="0" min="0">
+          <input type="text" id="pago-desc" placeholder="Descripcion (opcional)" style="margin-top:6px;font-size:.78rem">
+        </div>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:14px">
+        <button class="btn btn-red btn-full" onclick="registrarFiado()">&#43; Cargar fiado</button>
+        <button class="btn btn-green btn-full" onclick="registrarPago()">&#10003; Registrar pago</button>
+      </div>
+      <div class="card-title">Ultimos movimientos</div>
+      <div id="cuenta-movs" style="max-height:250px;overflow-y:auto"></div>
+    </div>
+  </div>
+</div>
+
 <!-- CAJA -->
 <div id="page-caja" class="page">
   <div class="page-header">
@@ -1281,6 +1429,7 @@ function nav(el) {
   else if(pg==='productos') cargarProductos();
   else if(pg==='historial') initHistorial();
   else if(pg==='reportes') cargarReportes();
+  else if(pg==='fiados') { cargarClientes(); }
   else if(pg==='caja') cargarCaja();
   else if(pg==='config') cargarConfig();
   else if(pg==='ingreso') cargarMovimientos();
@@ -1325,6 +1474,15 @@ document.addEventListener('keydown', e => {
   if(e.key==='F11') { e.preventDefault(); toggleFullscreen(); }
   if(e.key==='Escape') { closeModal(); posListaActual=[]; $('pos-result').innerHTML=''; }
 });
+
+function toggleDark() {
+  const isDark = document.documentElement.getAttribute('data-theme')==='dark';
+  document.documentElement.setAttribute('data-theme', isDark ? 'light' : 'dark');
+  $('dark-btn').textContent = isDark ? '🌙 Modo oscuro' : '☀️ Modo claro';
+  localStorage.setItem('kiosco-theme', isDark ? 'light' : 'dark');
+}
+// Restaurar tema al cargar
+(()=>{ const t=localStorage.getItem('kiosco-theme'); if(t==='dark'){document.documentElement.setAttribute('data-theme','dark');} })();
 
 function toggleFullscreen() {
   if(!document.fullscreenElement) { document.documentElement.requestFullscreen().catch(()=>{}); }
@@ -1851,6 +2009,71 @@ async function cargarReportes() {
       <span class="td-muted">${(p.monto/total*100).toFixed(1)}%</span>
     </div></td>
   </tr>`).join('');
+}
+
+// ── FIADOS / CLIENTES ────────────────────────────────────
+let clienteActual = null;
+
+function toggleNuevoCliente() {
+  const f=$('nuevo-cliente-form'); f.style.display=f.style.display==='none'?'block':'none';
+}
+
+async function crearCliente() {
+  const nombre=$('nc-nombre').value.trim(), tel=$('nc-tel').value.trim();
+  if(!nombre){toast('Ingresá el nombre del cliente','err');return;}
+  const r=await fetch('/api/clientes',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({nombre,telefono:tel})}).then(r=>r.json());
+  if(r.ok){toast(r.msg,'ok');toggleNuevoCliente();$('nc-nombre').value='';$('nc-tel').value='';cargarClientes();}
+  else toast(r.msg,'err');
+}
+
+async function cargarClientes() {
+  const q=$('cl-q')?.value||'';
+  const cls=await fetch(`/api/clientes?q=${encodeURIComponent(q)}`).then(r=>r.json());
+  const el=$('clientes-list');
+  if(!cls.length){el.innerHTML='<div style="color:var(--muted);font-size:.8rem;text-align:center;padding:24px">Sin clientes registrados</div>';return;}
+  el.innerHTML=cls.map(c=>`<div style="display:flex;align-items:center;justify-content:space-between;padding:10px 0;border-bottom:1px solid var(--border);cursor:pointer" onclick="verCuenta(${c.id})">
+    <div>
+      <div style="font-weight:700;font-size:.85rem">${c.nombre}</div>
+      ${c.telefono?`<div style="font-size:.7rem;color:var(--muted)">${c.telefono}</div>`:''}
+    </div>
+    <span class="badge ${c.saldo>0?'badge-danger':c.saldo<0?'badge-ok':'badge-cat'}">${c.saldo>0?'Debe '+pesos(c.saldo):c.saldo<0?'A favor '+pesos(-c.saldo):'Sin deuda'}</span>
+  </div>`).join('');
+}
+
+async function verCuenta(id) {
+  const d=await fetch(`/api/clientes/${id}`).then(r=>r.json());
+  if(!d||d.error) return;
+  clienteActual=d;
+  $('cuenta-titulo').textContent=`Cuenta: ${d.nombre}`;
+  $('cuenta-saldo').textContent=pesos(d.saldo);
+  $('cuenta-saldo').style.color=d.saldo>0?'var(--red)':d.saldo<0?'var(--green)':'var(--muted)';
+  $('cuenta-detalle').style.display='block';
+  $('cuenta-movs').innerHTML=!d.movimientos.length?'<div style="color:var(--muted);font-size:.78rem;text-align:center;padding:16px">Sin movimientos</div>':
+    d.movimientos.map(m=>`<div style="display:flex;justify-content:space-between;padding:7px 0;border-bottom:1px solid var(--border);font-size:.78rem">
+      <div><span class="badge ${m.tipo==='cargo'?'badge-danger':'badge-ok'}" style="margin-right:6px">${m.tipo==='cargo'?'Fiado':'Pago'}</span>${m.descripcion||'-'}</div>
+      <div style="font-weight:700">${m.tipo==='cargo'?'+':'-'}${pesos(m.monto)}</div>
+    </div>`).join('');
+}
+
+async function registrarFiado() {
+  if(!clienteActual) return;
+  const monto=parseFloat($('fiado-monto').value)||0;
+  if(!monto){toast('Ingresá el monto','err');return;}
+  const r=await fetch('/api/clientes/fiado',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({cliente_id:clienteActual.id,monto,desc:$('fiado-desc').value||'Fiado'})}).then(r=>r.json());
+  if(r.ok){toast(r.msg,'ok');$('fiado-monto').value='';$('fiado-desc').value='';verCuenta(clienteActual.id);cargarClientes();}
+  else toast(r.msg,'err');
+}
+
+async function registrarPago() {
+  if(!clienteActual) return;
+  const monto=parseFloat($('pago-monto').value)||0;
+  if(!monto){toast('Ingresá el monto','err');return;}
+  const r=await fetch('/api/clientes/pago',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({cliente_id:clienteActual.id,monto,desc:$('pago-desc').value||'Pago'})}).then(r=>r.json());
+  if(r.ok){toast(r.msg,'ok');$('pago-monto').value='';$('pago-desc').value='';verCuenta(clienteActual.id);cargarClientes();}
+  else toast(r.msg,'err');
 }
 
 // ── CAJA ──────────────────────────────────────────────────
