@@ -2222,20 +2222,23 @@ function descargarBackup() {
 }
 
 // ── NOTIFICACIÓN STOCK BAJO AL INICIO ────────────────────
+function cerrarStockAlert() { const m=document.getElementById('stock-alert-modal'); if(m) m.remove(); }
+
 async function checkStockAlInicio() {
   const d = await fetch('/api/dashboard').then(r=>r.json());
   if(d.bajo_stock && d.bajo_stock.length > 0) {
     const lista = d.bajo_stock.map(p=>`• ${p.nombre} — ${p.stock} unidad${p.stock!==1?'es':''}${p.stock===0?' (SIN STOCK)':''}`).join('\n');
     const modal = document.createElement('div');
-    modal.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:9999;display:flex;align-items:center;justify-content:center';
-    modal.innerHTML=`<div style="background:#fff;border-radius:16px;padding:28px;max-width:420px;width:90%;box-shadow:0 20px 60px rgba(0,0,0,.2)">
-      <div style="font-size:1.5rem;margin-bottom:6px">⚠️</div>
+    modal.id = 'stock-alert-modal';
+    modal.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:9999;display:flex;align-items:center;justify-content:center;padding:20px';
+    modal.innerHTML=`<div style="background:#fff;border-radius:16px;padding:24px;max-width:420px;width:100%;box-shadow:0 20px 60px rgba(0,0,0,.2);max-height:90vh;overflow-y:auto">
+      <div style="font-size:1.4rem;margin-bottom:6px">⚠️</div>
       <div style="font-size:1rem;font-weight:900;margin-bottom:4px;color:#1a1200">Stock bajo al iniciar</div>
-      <div style="font-size:.75rem;color:#8a7d60;margin-bottom:14px">${d.bajo_stock.length} producto${d.bajo_stock.length!==1?'s':''} necesitan reposición</div>
-      <div style="background:#fff8e6;border:1px solid #f5c800;border-radius:9px;padding:12px;font-size:.75rem;font-family:'Courier New',monospace;white-space:pre;line-height:1.8">${lista}</div>
-      <div style="display:flex;gap:10px;margin-top:16px">
-        <button onclick="this.closest('[style]').remove();navTo('ingreso')" style="flex:1;padding:10px;background:#1a1200;color:#fff;border:none;border-radius:9px;font-weight:700;cursor:pointer;font-size:.82rem">Ir a Ingreso</button>
-        <button onclick="this.closest('[style]').remove()" style="padding:10px 16px;background:#f5f0e8;border:1.5px solid #e0d8c8;border-radius:9px;font-weight:700;cursor:pointer;font-size:.82rem">Cerrar</button>
+      <div style="font-size:.75rem;color:#8a7d60;margin-bottom:12px">${d.bajo_stock.length} producto${d.bajo_stock.length!==1?'s':''} necesitan reposición</div>
+      <div style="background:#fff8e6;border:1px solid #f5c800;border-radius:9px;padding:10px 12px;font-size:.75rem;font-family:'Courier New',monospace;white-space:pre-line;line-height:1.9;max-height:180px;overflow-y:auto">${lista}</div>
+      <div style="display:flex;gap:10px;margin-top:14px">
+        <button onclick="cerrarStockAlert();navTo('ingreso')" style="flex:1;padding:10px;background:#1a1200;color:#fff;border:none;border-radius:9px;font-weight:700;cursor:pointer;font-size:.82rem">Ir a Ingreso</button>
+        <button onclick="cerrarStockAlert()" style="padding:10px 16px;background:#f5f0e8;border:1.5px solid #e0d8c8;border-radius:9px;font-weight:700;cursor:pointer;font-size:.82rem">Cerrar</button>
       </div>
     </div>`;
     document.body.appendChild(modal);
