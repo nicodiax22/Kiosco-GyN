@@ -407,6 +407,34 @@ def db_movimientos(limit=30):
     conn.close()
     return rows
 
+def db_import_precios_csv(csv_text):
+    import csv as csvmod, io
+    reader = csvmod.DictReader(io.StringIO(csv_text))
+    conn = get_db()
+    ok, errores = 0, []
+    for row in reader:
+        codigo = (row.get("codigo") or row.get("Codigo") or "").strip()
+        precio_venta = row.get("precio_venta") or row.get("Precio Venta") or row.get("precio") or ""
+        precio_costo = row.get("precio_costo") or row.get("Precio Costo") or row.get("costo") or ""
+        if not codigo:
+            continue
+        try:
+            updates, params = [], []
+            if precio_venta:
+                updates.append("precio_venta=?"); params.append(float(precio_venta))
+            if precio_costo:
+                updates.append("precio_costo=?"); params.append(float(precio_costo))
+            if updates:
+                params.append(codigo)
+                r = conn.execute(f"UPDATE productos SET {','.join(updates)},updated_at=datetime('now','localtime') WHERE codigo=? AND activo=1", params)
+                if r.rowcount > 0: ok += 1
+                else: errores.append(f"{codigo}: no encontrado")
+        except Exception as e:
+            errores.append(f"{codigo}: {e}")
+    conn.commit()
+    conn.close()
+    return {"ok": True, "actualizados": ok, "errores": errores}
+
 def db_export_csv(fd, fh):
     conn = get_db()
     rows = conn.execute("""
@@ -504,7 +532,10 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         b=self.body(); p=urlparse(self.path).path
-        if p=="/api/productos": self.send_json(db_crear_producto(b))
+        if p=="/api/import/precios":
+            csv_text = b.get("csv","")
+            self.send_json(db_import_precios_csv(csv_text))
+        elif p=="/api/productos": self.send_json(db_crear_producto(b))
         elif p=="/api/venta": self.send_json(db_venta(b))
         elif p=="/api/stock/entrada": self.send_json(db_stock_entrada(b["producto_id"],b["cantidad"],b.get("motivo","Compra proveedor")))
         elif p=="/api/caja/abrir": self.send_json(db_abrir_caja(b.get("monto_inicial",0),b.get("obs","")))
@@ -1000,7 +1031,26 @@ input::-webkit-outer-spin-button,input::-webkit-inner-spin-button{-webkit-appear
 <div id="page-productos" class="page">
   <div class="page-header">
     <div><div class="page-title">Productos</div><div class="page-sub">Gestioná el catalogo completo</div></div>
-    <button class="btn btn-yellow" onclick="openModal()">&#43; Nuevo Producto</button>
+    <div style="display:flex;gap:8px;flex-wrap:wrap">
+      <button class="btn btn-ghost btn-sm" onclick="toggleImportCSV()">&#128196; Importar precios CSV</button>
+      <button class="btn btn-yellow" onclick="openModal()">&#43; Nuevo Producto</button>
+    </div>
+  </div>
+  <div id="import-csv-panel" style="display:none" class="card" style="margin-bottom:14px">
+    <div class="card-title">&#128196; Importar precios desde CSV</div>
+    <div class="alert alert-info" style="margin-bottom:12px;font-size:.72rem">
+      El archivo debe tener columnas: <strong>codigo</strong>, <strong>precio_venta</strong> (y opcionalmente <strong>precio_costo</strong>).
+      La primera fila debe ser el encabezado. Solo se actualizan productos existentes.
+    </div>
+    <textarea id="csv-input" rows="6" style="font-family:monospace;font-size:.75rem;resize:vertical" placeholder="codigo,precio_venta,precio_costo&#10;7790040153993,700,380&#10;7790040150114,1050,580"></textarea>
+    <div style="display:flex;gap:10px;margin-top:10px;align-items:center;flex-wrap:wrap">
+      <button class="btn btn-primary" onclick="importarCSV()">&#10003; Importar y actualizar precios</button>
+      <label style="text-transform:none;font-size:.8rem;cursor:pointer;color:var(--blue)">
+        &#128196; O cargar archivo .csv
+        <input type="file" accept=".csv" style="display:none" onchange="leerCSV(this)">
+      </label>
+    </div>
+    <div id="import-result" style="margin-top:10px"></div>
   </div>
   <div class="searchbar">
     <input type="text" id="prod-q" placeholder="&#128269;  Buscar producto..." oninput="cargarProductos()">
@@ -1154,6 +1204,17 @@ input::-webkit-outer-spin-button,input::-webkit-inner-spin-button{-webkit-appear
 </main>
 </div>
 
+<!-- BUSCADOR GLOBAL F3 -->
+<div class="modal-bg" id="search-bg" onclick="if(event.target===this)closeSearch()">
+  <div class="modal" style="max-width:600px">
+    <div style="display:flex;gap:10px;margin-bottom:14px">
+      <input id="global-q" type="text" placeholder="Buscar productos, ventas..." style="flex:1;font-size:1rem" oninput="globalSearch()" autocomplete="off">
+      <button class="modal-close" onclick="closeSearch()">&#10005;</button>
+    </div>
+    <div id="global-results" style="max-height:400px;overflow-y:auto"></div>
+  </div>
+</div>
+
 <!-- MODAL PRODUCTO -->
 <div class="modal-bg" id="modal-bg">
   <div class="modal">
@@ -1258,6 +1319,7 @@ document.addEventListener('keydown', e => {
     return;
   }
   if(e.key==='F2') { e.preventDefault(); navTo('pos'); }
+  if(e.key==='F3') { e.preventDefault(); openSearch(); }
   if(e.key==='F5') { e.preventDefault(); resetPOS(); }
   if(e.key==='F10') { e.preventDefault(); confirmarVenta(); }
   if(e.key==='F11') { e.preventDefault(); toggleFullscreen(); }
@@ -1874,6 +1936,60 @@ async function guardarConfig() {
   const r=await fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)}).then(r=>r.json());
   if(r.ok){toast('Configuracion guardada','ok');$('sb-negocio').textContent=data.nombre_negocio;}
   else toast('Error al guardar','err');
+}
+
+// ── BUSCADOR GLOBAL ──────────────────────────────────────
+function openSearch() {
+  $('search-bg').classList.add('show');
+  setTimeout(()=>$('global-q').focus(),100);
+}
+function closeSearch() { $('search-bg').classList.remove('show'); $('global-q').value=''; $('global-results').innerHTML=''; }
+
+async function globalSearch() {
+  const q = $('global-q').value.trim();
+  if(q.length < 2) { $('global-results').innerHTML=''; return; }
+  const prods = await fetch(`/api/productos?q=${encodeURIComponent(q)}`).then(r=>r.json());
+  let html = '';
+  if(prods.length) {
+    html += `<div style="font-size:.6rem;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);padding:6px 0 4px">Productos (${prods.length})</div>`;
+    html += prods.slice(0,6).map(p=>`<div style="display:flex;align-items:center;gap:10px;padding:9px 0;border-bottom:1px solid var(--border);cursor:pointer" onclick="closeSearch();navTo('pos');setTimeout(()=>{$('pos-cod').value='${p.codigo}';posBuscar()},200)">
+      <span class="badge badge-cat">${p.categoria}</span>
+      <span style="flex:1;font-weight:600">${p.nombre}</span>
+      <span style="font-weight:700">${pesos(p.precio_venta)}</span>
+      <span class="badge ${p.stock>p.stock_minimo?'badge-ok':p.stock>0?'badge-warn':'badge-danger'}">${p.stock} u</span>
+    </div>`).join('');
+  }
+  if(!html) html = '<div style="text-align:center;color:var(--muted);padding:24px;font-size:.82rem">Sin resultados para "'+q+'"</div>';
+  $('global-results').innerHTML = html;
+}
+
+// ── IMPORTADOR CSV ────────────────────────────────────────
+function toggleImportCSV() {
+  const p = $('import-csv-panel');
+  p.style.display = p.style.display==='none' ? 'block' : 'none';
+}
+
+function leerCSV(input) {
+  const f = input.files[0];
+  if(!f) return;
+  const reader = new FileReader();
+  reader.onload = e => { $('csv-input').value = e.target.result; };
+  reader.readAsText(f, 'UTF-8');
+}
+
+async function importarCSV() {
+  const csv = $('csv-input').value.trim();
+  if(!csv) { toast('Pegá o cargá un archivo CSV primero','err'); return; }
+  const r = await fetch('/api/import/precios',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({csv})}).then(r=>r.json());
+  const resEl = $('import-result');
+  if(r.ok) {
+    resEl.innerHTML = `<div class="alert alert-ok">✅ <strong>${r.actualizados} productos actualizados.</strong>${r.errores.length?` ${r.errores.length} con error: ${r.errores.slice(0,3).join(', ')}`:''}</div>`;
+    if(r.actualizados > 0) cargarProductos();
+    toast(`${r.actualizados} precios actualizados`,'ok');
+  } else {
+    resEl.innerHTML = `<div class="alert alert-warn">❌ Error al importar</div>`;
+  }
 }
 
 // ── BACKUP ───────────────────────────────────────────────
