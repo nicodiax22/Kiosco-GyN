@@ -1,0 +1,26 @@
+# Entorno virtual
+.venv/
+
+# Base de datos (datos del cliente, no va al repo)
+kiosco.db
+*.db-wal
+*.db-shm
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# Acceso directo de Windows (es específico de cada PC)
+*.lnk
+
+# Videos y archivos temporales
+*.mp4
+*.avi
+*.mov
+
+# Claude Code config
+.claude/
+
+# Logs
+*.log
