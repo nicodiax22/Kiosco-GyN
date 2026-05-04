@@ -337,6 +337,22 @@ def db_reportes(periodo="mes"):
     return {"resumen":resumen,"por_dia":por_dia,"por_producto":por_producto,
             "ganancia_total":ganancia,"fd":fd,"fh":fh}
 
+def db_rentabilidad_cat(fd, fh):
+    conn = get_db()
+    rows = [dict(r) for r in conn.execute("""
+        SELECT p.categoria,
+               SUM(vi.subtotal) monto,
+               SUM(vi.subtotal - p.precio_costo * vi.cantidad) ganancia,
+               SUM(vi.cantidad) unidades
+        FROM ventas_items vi
+        JOIN productos p ON p.id = vi.producto_id
+        JOIN ventas v ON v.id = vi.venta_id
+        WHERE v.fecha BETWEEN ? AND ? AND v.anulada=0
+        GROUP BY p.categoria ORDER BY monto DESC
+    """, (fd, fh)).fetchall()]
+    conn.close()
+    return rows
+
 def db_config():
     conn = get_db()
     rows = conn.execute("SELECT * FROM config").fetchall()
@@ -461,6 +477,9 @@ class Handler(BaseHTTPRequestHandler):
         elif p=="/api/reportes": self.send_json(db_reportes(g("periodo","mes")))
         elif p=="/api/config": self.send_json(db_config())
         elif p=="/api/caja": self.send_json(db_caja())
+        elif p=="/api/rentabilidad":
+            fd=g("desde",date.today().replace(day=1).isoformat()); fh=g("hasta",date.today().isoformat())
+            self.send_json(db_rentabilidad_cat(fd,fh))
         elif p=="/api/movimientos":
             self.send_json(db_movimientos(int(g("limit","50"))))
         elif p=="/api/backup":
@@ -1055,6 +1074,10 @@ input::-webkit-outer-spin-button,input::-webkit-inner-spin-button{-webkit-appear
       <canvas id="chart-metodos" height="120"></canvas>
     </div>
   </div>
+  <div class="card" style="margin-bottom:14px">
+    <div class="card-title">&#127981; Rentabilidad por categoria</div>
+    <canvas id="chart-categorias" height="80"></canvas>
+  </div>
   <div class="card">
     <div class="card-title">&#127942; Productos mas vendidos</div>
     <div class="table-wrap">
@@ -1170,7 +1193,7 @@ let metodoActual = 'efectivo';
 let modalMode = 'new';
 let editId = null;
 let periodoActual = 'mes';
-let chartSemana = null, chartRep = null, chartMetodos = null;
+let chartSemana = null, chartRep = null, chartMetodos = null, chartCats = null;
 let ingrProducto = null;
 
 // ── UTILS ─────────────────────────────────────────────────
@@ -1224,6 +1247,11 @@ fetch('/api/config').then(r=>r.json()).then(cfg => {
 
 // ── KEYBOARD SHORTCUTS ─────────────────────────────────────
 document.addEventListener('keydown', e => {
+  // Selección rápida de producto en lista POS con teclas 1-8
+  if(posListaActual.length && !e.ctrlKey && !e.altKey && e.target.tagName!=='INPUT') {
+    const n = parseInt(e.key);
+    if(n >= 1 && n <= posListaActual.length) { posShowProd(posListaActual[n-1]); return; }
+  }
   if(e.target.tagName==='INPUT'||e.target.tagName==='SELECT'||e.target.tagName==='TEXTAREA') {
     if(e.key==='F5') { e.preventDefault(); resetPOS(); }
     if(e.key==='F10') { e.preventDefault(); confirmarVenta(); }
@@ -1232,8 +1260,14 @@ document.addEventListener('keydown', e => {
   if(e.key==='F2') { e.preventDefault(); navTo('pos'); }
   if(e.key==='F5') { e.preventDefault(); resetPOS(); }
   if(e.key==='F10') { e.preventDefault(); confirmarVenta(); }
-  if(e.key==='Escape') closeModal();
+  if(e.key==='F11') { e.preventDefault(); toggleFullscreen(); }
+  if(e.key==='Escape') { closeModal(); posListaActual=[]; $('pos-result').innerHTML=''; }
 });
+
+function toggleFullscreen() {
+  if(!document.fullscreenElement) { document.documentElement.requestFullscreen().catch(()=>{}); }
+  else { document.exitFullscreen(); }
+}
 
 // ── DASHBOARD ─────────────────────────────────────────────
 async function loadDashboard() {
@@ -1328,11 +1362,14 @@ async function posBuscar() {
   posShowProd(prod);
 }
 
+let posListaActual = [];
 function posShowList(lista) {
+  posListaActual = lista.slice(0,8);
   $('pos-result').innerHTML = `<div class="card" style="margin-bottom:14px">
-    <div class="card-title">Selecciona un producto</div>
-    ${lista.slice(0,8).map(p=>`<div style="display:flex;align-items:center;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--border);cursor:pointer" onclick='posShowProd(${JSON.stringify(p).replace(/'/g,"&#39;")})'>
-      <div><strong>${p.nombre}</strong> <span class="td-muted">${p.codigo}</span></div>
+    <div class="card-title">Selecciona un producto <span style="font-weight:400;color:var(--muted)">(presioná 1-${posListaActual.length} para elegir)</span></div>
+    ${posListaActual.map((p,i)=>`<div style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--border);cursor:pointer" onclick='posShowProd(${JSON.stringify(p).replace(/'/g,"&#39;")})'>
+      <div style="width:22px;height:22px;border-radius:6px;background:var(--yellow);color:var(--dark);font-size:.7rem;font-weight:900;display:flex;align-items:center;justify-content:center;flex-shrink:0">${i+1}</div>
+      <div style="flex:1"><strong>${p.nombre}</strong> <span class="td-muted">${p.codigo}</span></div>
       <div style="display:flex;align-items:center;gap:12px"><span style="font-weight:700">${pesos(p.precio_venta)}</span><span class="badge ${p.stock>p.stock_minimo?'badge-ok':p.stock>0?'badge-warn':'badge-danger'}">${p.stock} u</span></div>
     </div>`).join('')}
   </div>`;
@@ -1717,6 +1754,25 @@ async function cargarReportes() {
     },
     options:{responsive:true,cutout:'65%',plugins:{legend:{position:'bottom'},tooltip:{callbacks:{label:c=>pesos(c.raw)}}}}
   });
+
+  // Chart categorias
+  const cats = await fetch(`/api/rentabilidad?desde=${d.fd}&hasta=${d.fh}`).then(r=>r.json());
+  if(cats.length && $('chart-categorias')) {
+    if(chartCats) chartCats.destroy();
+    const COLORES = ['#f5c800','#0057ff','#00c566','#ff3b30','#009ee3','#9c27b0','#ff9800'];
+    chartCats = new Chart($('chart-categorias'), {
+      type:'bar',
+      data:{
+        labels: cats.map(c=>c.categoria),
+        datasets:[
+          {label:'Ventas',data:cats.map(c=>c.monto),backgroundColor:'#f5c800',borderRadius:5,borderSkipped:false},
+          {label:'Ganancia',data:cats.map(c=>Math.max(c.ganancia,0)),backgroundColor:'#00c566',borderRadius:5,borderSkipped:false}
+        ]
+      },
+      options:{responsive:true,plugins:{legend:{position:'top'},tooltip:{callbacks:{label:c=>c.dataset.label+': '+pesos(c.raw)}}},
+        scales:{y:{ticks:{callback:v=>pesos(v)},grid:{color:'rgba(0,0,0,.05)'}},x:{grid:{display:false}}}}
+    });
+  }
 
   // Tabla productos
   const total=r.total_ventas||1;

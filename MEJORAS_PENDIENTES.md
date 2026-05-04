@@ -10,11 +10,11 @@
 ## PENDIENTE (en orden de prioridad)
 
 ### ALTA PRIORIDAD
-- [ ] 1. Editar cantidad directamente en el carrito (inline input en cada fila)
-- [ ] 2. Ticket imprimible (window.print con formato 80mm térmica)
-- [ ] 3. Notificación automática de stock bajo al abrir el sistema
-- [ ] 4. Historial de movimientos de stock (conectar tabla movimientos_stock real)
-- [ ] 5. Backup de base de datos (endpoint /api/backup que descarga el .db)
+- [x] 1. Editar cantidad directamente en el carrito (inline input en cada fila)
+- [x] 2. Ticket imprimible (window.print con formato 80mm térmica)
+- [x] 3. Notificación automática de stock bajo al abrir el sistema
+- [x] 4. Historial de movimientos de stock (conectar tabla movimientos_stock real)
+- [x] 5. Backup de base de datos (endpoint /api/backup que descarga el .db)
 
 ### MEDIA PRIORIDAD
 - [ ] 6. Buscador en POS con teclas 1/2/3 para seleccionar de lista
